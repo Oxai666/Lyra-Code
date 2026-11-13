@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
+import java.io.File
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -152,7 +153,12 @@ class SystemCommandExecutor(
 
     private fun runRootProcess(command: String, timeoutSeconds: Int): SystemCommandResult {
         val quoted = shellQuote(command)
-        val template = settings.customSuCommand
+        // ⚠ 把配置里的 su 前缀解析成真实绝对路径再拼。
+        //
+        // 只靠 PATH 的话，KernelSU 的 /data/adb/ksu/bin/su 和 Magisk 的
+        // /data/adb/magisk/su 在很多 ROM 上都不在里面——结果是用户明明装了
+        // root，App 却一直报「未获得 Root 权限」。
+        val template = resolveSuBinary(settings.customSuCommand)
         val invocation = if ("{command}" in template) {
             template.replace("{command}", quoted)
         } else {
@@ -171,8 +177,10 @@ class SystemCommandExecutor(
 
     private fun collectProcess(process: Process, mode: String, timeoutSeconds: Int): SystemCommandResult {
         val readers = Executors.newFixedThreadPool(2)
-        val stdoutFuture = readers.submit(Callable { process.inputStream.bufferedReader().use { it.readText() } })
-        val stderrFuture = readers.submit(Callable { process.errorStream.bufferedReader().use { it.readText() } })
+        // 用 readCapped 而不是 readText：后者没有上限，
+        // 一条 `cat /dev/urandom` 就够把 App 撑死（系统静默 kill，无报错）。
+        val stdoutFuture = readers.submit(Callable { readCapped(process.inputStream) })
+        val stderrFuture = readers.submit(Callable { readCapped(process.errorStream) })
         val timeout = timeoutSeconds.coerceIn(3, 600)
         val finished = process.waitFor(timeout.toLong(), TimeUnit.SECONDS)
         if (!finished) process.destroyForcibly()
@@ -219,4 +227,87 @@ class SystemCommandExecutor(
     }
 
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\"'\"'")}'"
+
+    /**
+     * su 的常见落点。
+     *
+     * 注意第一个是裸名 `su`，走 PATH 查找；后面几个是绝对路径兜底，
+     * 覆盖 KernelSU / Magisk / 老 ROM 的 /system/xbin。
+     */
+    private val suCandidates = listOf(
+        "su",
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/sbin/su",
+        "/data/adb/ksu/bin/su",
+        "/data/adb/magisk/su",
+        "/debug_ramdisk/su",
+    )
+
+    /**
+     * 把配置里的 su 前缀（如 `su -c`）换成一个真实存在的绝对路径。
+     *
+     * 找不到就原样返回配置——让 su 自己去报错，比这里编一个不存在
+     * 的路径让它报 "No such file" 更有用。
+     */
+    private fun resolveSuBinary(configured: String): String {
+        val parts = configured.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (parts.isEmpty()) return "su"
+        val head = parts[0]
+        val rest = parts.drop(1)
+        val resolved = when {
+            head.contains('/') ->
+                File(head).takeIf { it.exists() && it.canExecute() }?.absolutePath
+            head == "su" ->
+                suCandidates.firstNotNullOfOrNull { candidate ->
+                    if (candidate.contains('/')) {
+                        File(candidate).takeIf { it.exists() && it.canExecute() }?.absolutePath
+                    } else {
+                        whichOnPath(candidate)
+                    }
+                }
+            else -> whichOnPath(head)
+        } ?: head
+        return (listOf(resolved) + rest).joinToString(" ")
+    }
+
+    private fun whichOnPath(name: String): String? {
+        val path = System.getenv("PATH").orEmpty()
+        if (path.isBlank()) return null
+        return path.split(':').asSequence()
+            .filter { it.isNotBlank() }
+            .map { File(it, name) }
+            .firstOrNull { it.exists() && it.canExecute() }
+            ?.absolutePath
+    }
+
+    /**
+     * 带上限地读完一个流。
+     *
+     * 原来直接 readText()：`cat /dev/urandom`、巨型 dmesg、或者一个写不完的
+     * 构建日志都会把内存吃光，表现是 App 被系统杀掉、没有任何报错。
+     * 上限之外的内容丢弃，只保留前 [limit] 个字符。
+     */
+    private fun readCapped(stream: java.io.InputStream, limit: Int = MAX_OUTPUT_CHARS): String {
+        val sb = StringBuilder()
+        try {
+            stream.bufferedReader().use { reader ->
+                val buffer = CharArray(8 * 1024)
+                while (true) {
+                    val read = reader.read(buffer)
+                    if (read < 0) break
+                    if (sb.length >= limit) continue
+                    sb.append(buffer, 0, minOf(read, limit - sb.length))
+                }
+            }
+        } catch (_: Throwable) {
+            // 进程被强杀时读端会抛，能拿到多少算多少
+        }
+        return sb.toString()
+    }
+
+    private companion object {
+        /** 单次命令输出上限 256K 字符。 */
+        const val MAX_OUTPUT_CHARS = 256 * 1024
+    }
 }
