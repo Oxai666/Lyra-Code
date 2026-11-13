@@ -50,7 +50,7 @@ class TermuxExecutor(
                 runDetached = runDetached,
             )
         }.fold(
-            onSuccess = { TermuxResult(true, it) },
+            onSuccess = { TermuxResult(true, it.toAgentText()) },
             onFailure = {
                 if (it is CancellationException) throw it
                 if (it is TermuxCommandTimeoutException) {
@@ -107,12 +107,19 @@ class TermuxExecutor(
         return "已通过 Termux:API 静默提交命令。"
     }
 
+    /**
+     * 跑一次 RUN_COMMAND，返回完整结果而不是拼好的文本。
+     *
+     * 之前这里直接 `toAgentText()`，调用方只能拿到一段带 markdown 围栏的字符串。
+     * tmux 会话要的是干净的 stdout（capture-pane 的内容），从格式化文本里
+     * 反解太脆，所以改成返回结构体，由调用方决定怎么呈现。
+     */
     private suspend fun runWithTermuxService(
         command: String,
         workDir: String?,
         timeoutSeconds: Int,
         runDetached: Boolean,
-    ): String {
+    ): TermuxCommandResult {
         val executionId = nextExecutionId.getAndIncrement()
         val resultDeferred = TermuxCommandResultReceiver.register(executionId)
         val pendingIntent = createResultPendingIntent(executionId)
@@ -146,7 +153,7 @@ class TermuxExecutor(
                 resultDeferred.await()
             }
             if (commandResult != null) {
-                return commandResult.toAgentText()
+                return commandResult
             }
             throw TermuxCommandTimeoutException(
                 if (runDetached) {
@@ -168,6 +175,24 @@ class TermuxExecutor(
             TermuxCommandResultReceiver.unregister(executionId)
         }
     }
+
+    /**
+     * 跑一条命令并拿到原始结果（stdout / stderr / exitCode）。
+     *
+     * 给 tmux 会话层用：它需要读 capture-pane 的原文，不能容忍
+     * 文本格式化那一层。走前台路径（runDetached = false），
+     * 因为 tmux 操作本身很快就返回。
+     */
+    suspend fun runRaw(
+        command: String,
+        timeoutSeconds: Int = 20,
+        workDir: String? = null,
+    ): TermuxCommandResult = runWithTermuxService(
+        command = command,
+        workDir = workDir,
+        timeoutSeconds = timeoutSeconds.coerceIn(5, MAX_COMMAND_RESULT_TIMEOUT_SECONDS),
+        runDetached = false,
+    )
 
     private fun createResultPendingIntent(executionId: Int): PendingIntent {
         val intent = Intent(context, TermuxCommandResultReceiver::class.java).apply {

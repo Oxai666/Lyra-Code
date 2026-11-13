@@ -117,6 +117,10 @@ class OpenAiAgent(
     private val scheduledTaskManager: ScheduledTaskManager,
     private val responseCache: AiResponseCache? = null,
 ) {
+    /** tmux 持久会话。懒加载：绝大多数对话用不到，没必要一开始就建。 */
+    private val tmuxSessions by lazy {
+        com.yukisoffd.lyracode.termux.TmuxSessionManager(termuxExecutor)
+    }
     private val prootCommandExecutor = ProotCommandExecutor(context)
     private val linuxGuiTools = com.yukisoffd.lyracode.x11.LinuxGuiToolHandler(context)
 
@@ -2259,6 +2263,51 @@ class OpenAiAgent(
                         val result = termuxExecutor.execute(command, workDir, timeoutSeconds, background = background)
                         if (result.ok) ToolExecution(result.message) else error(result.message)
                     }
+                }
+                "termux_session" -> {
+                    val action = args.optString("action").trim().lowercase()
+                    val session = args.optString("session").trim()
+                    val outcome = when (action) {
+                        "start" -> tmuxSessions.start(session.takeIf { it.isNotBlank() })
+                        "send" -> {
+                            val keys = args.optJSONArray("keys")?.let { arr ->
+                                (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }
+                            }
+                            if (session.isBlank()) {
+                                com.yukisoffd.lyracode.termux.TmuxSessionManager.Outcome(
+                                    false,
+                                    "send 需要 session 参数。先用 action=list 看看有哪些会话。",
+                                )
+                            } else {
+                                tmuxSessions.send(
+                                    session = session,
+                                    text = args.optString("text").takeIf { it.isNotEmpty() },
+                                    keys = keys,
+                                    pressEnter = args.optBoolean("press_enter", true),
+                                )
+                            }
+                        }
+                        "capture" -> if (session.isBlank()) {
+                            com.yukisoffd.lyracode.termux.TmuxSessionManager.Outcome(
+                                false, "capture 需要 session 参数。",
+                            )
+                        } else {
+                            tmuxSessions.capture(session, args.optInt("lines", 200))
+                        }
+                        "kill" -> if (session.isBlank()) {
+                            com.yukisoffd.lyracode.termux.TmuxSessionManager.Outcome(
+                                false, "kill 需要 session 参数。",
+                            )
+                        } else {
+                            tmuxSessions.kill(session)
+                        }
+                        "list" -> tmuxSessions.list()
+                        else -> com.yukisoffd.lyracode.termux.TmuxSessionManager.Outcome(
+                            false,
+                            "未知 action：\"$action\"。可用：start / send / capture / kill / list。",
+                        )
+                    }
+                    ToolExecution(outcome.text, ok = outcome.ok)
                 }
                 "linux_gui" -> linuxGuiTools.execute(args).let { ToolExecution(it.toString(), ok = it.optBoolean("ok", true)) }
                 "proot_command" -> {

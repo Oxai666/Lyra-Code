@@ -253,6 +253,24 @@ internal class AgentToolSchemaFactory(
                 ),
             )
         }
+        // termux_session：tmux 持久会话。
+        // 跟 run_command 并列放在同一个权限门后面——都需要 Termux RUN_COMMAND。
+        if (termuxExecutor.hasRunCommandPermission()) {
+            definitions.put(
+                functionWithOptional(
+                    "termux_session",
+                    "Persistent shell session in Termux, backed by tmux. run_command starts a fresh process every call, so cd/export/source/aliases are gone afterwards; this keeps them. Use it for multi-step work where state must survive: activating a venv, cd-ing into a project, exporting env vars, keeping a dev server running. Actions: start (new session, returns its name), send (type text or keys into it), capture (read the screen), kill, list. Always call list first if you do not know the session name. Command output is NOT returned by send - it goes to the screen, so call capture after sending to see what happened. tmux is installed automatically on first use.",
+                    required = listOf("action" to "string"),
+                    optional = listOf(
+                        "session" to "string",
+                        "text" to "string",
+                        "keys" to "array:string",
+                        "lines" to "integer",
+                        "press_enter" to "boolean",
+                    ),
+                ),
+            )
+        }
         if (prootAvailable()) {
             definitions.put(prootCommandToolDefinition())
             definitions.put(linuxGuiToolDefinition())
