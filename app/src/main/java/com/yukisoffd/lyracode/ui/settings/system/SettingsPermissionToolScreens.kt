@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.provider.OpenableColumns
 import android.webkit.WebView
 import android.content.pm.PackageManager
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -280,6 +283,13 @@ internal fun AgentToolSettings(settings: AppSettings, termuxExecutor: TermuxExec
     var disabled by remember(externalRevision) { mutableStateOf(settings.disabledTools()) }
     var query by rememberSaveable { mutableStateOf("") }
     var showReachabilityPage by rememberSaveable { mutableStateOf(false) }
+    // 哪个 MCP 服务器展开了。默认全收起——接了三五个服务器、每个几十个工具时，
+    // 平铺出来能把这一页撑到几百行，本地工具都被埋掉了。
+    // 用 remember 而不是 rememberSaveable：Set<String> 不在 Bundle 的
+    // 可保存类型里，rememberSaveable 会在转屏时抛
+    // "cannot be saved using the current SaveableStateRegistry"。
+    // 展开状态丢了无所谓，不值得为它写一个自定义 Saver。
+    var expandedMcpServers by remember { mutableStateOf(emptySet<String>()) }
     val localTools = agentToolCatalog().filter {
         it.name != "proot_command" || prootState.instances.any { instance -> instance.enabled }
     }
@@ -294,6 +304,10 @@ internal fun AgentToolSettings(settings: AppSettings, termuxExecutor: TermuxExec
         mcpTools.filter { (server, tool) ->
             matches("MCP ${server.name} ${tool.name} ${tool.description} ${settings.mcpToolFunctionName(server, tool)}")
         }
+    }
+    // 按服务器分组。同一个服务器的工具摆在一起，展开/收起以服务器为单位。
+    val filteredMcpGroups = remember(filteredMcpTools) {
+        filteredMcpTools.groupBy { (server, _) -> server.id }
     }
     KimiCardBox {
         Text(uiText(R.string.title_search_tools), style = MaterialTheme.typography.titleSmall)
@@ -347,23 +361,81 @@ internal fun AgentToolSettings(settings: AppSettings, termuxExecutor: TermuxExec
             }
             if (index != filteredLocalTools.lastIndex || filteredMcpTools.isNotEmpty()) KimiDivider()
         }
-        filteredMcpTools.forEachIndexed { index, (server, tool) ->
-            val functionName = settings.mcpToolFunctionName(server, tool)
-            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("MCP · ${server.name} / ${tool.name}", style = MaterialTheme.typography.titleSmall)
-                    Text(functionName, color = KimiMuted, style = MaterialTheme.typography.labelSmall)
-                    Text(tool.description.ifBlank { uiText(R.string.label_remote_mcp_tool) }, color = KimiMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        // MCP 工具按服务器折叠。
+        //
+        // 原来每个工具平铺一行——接一个带 40 个工具的 MCP 服务器，
+        // 这一页就多出 40 行，本地工具全被挤到上面看不见了。
+        // 现在每个服务器一行：「MCP · 名字   12/40 启用  ▾」，
+        // 点一下展开里面的工具。
+        //
+        // 搜索时强制展开：用户都打字了，还让他再点一次不合理。
+        val forceExpand = query.isNotBlank()
+        filteredMcpGroups.entries.forEachIndexed { groupIndex, (serverId, pairs) ->
+            val server = pairs.first().first
+            val expanded = forceExpand || serverId in expandedMcpServers
+            val enabledCount = pairs.count { (srv, tool) ->
+                settings.mcpToolFunctionName(srv, tool) !in disabled
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        expandedMcpServers = if (serverId in expandedMcpServers) {
+                            expandedMcpServers - serverId
+                        } else {
+                            expandedMcpServers + serverId
+                        }
+                    }
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("MCP · ${server.name}", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        uiText(R.string.label_mcp_group_summary, enabledCount, pairs.size),
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
-                Switch(
-                    checked = functionName !in disabled,
-                    onCheckedChange = { enabled ->
-                        settings.setToolEnabled(functionName, enabled)
-                        disabled = settings.disabledTools()
-                    },
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (expanded) uiText(R.string.action_collapse) else uiText(R.string.action_expand),
+                    tint = KimiMuted,
                 )
             }
-            if (index != filteredMcpTools.lastIndex) KimiDivider()
+
+            AnimatedVisibility(visible = expanded) {
+                Column(Modifier.fillMaxWidth()) {
+                    pairs.forEach { (srv, tool) ->
+                        val functionName = settings.mcpToolFunctionName(srv, tool)
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 12.dp, top = 4.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(tool.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(functionName, color = KimiMuted, style = MaterialTheme.typography.labelSmall)
+                                Text(
+                                    tool.description.ifBlank { uiText(R.string.label_remote_mcp_tool) },
+                                    color = KimiMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Switch(
+                                checked = functionName !in disabled,
+                                onCheckedChange = { enabled ->
+                                    settings.setToolEnabled(functionName, enabled)
+                                    disabled = settings.disabledTools()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            if (groupIndex != filteredMcpGroups.size - 1) KimiDivider()
         }
     }
 }

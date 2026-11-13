@@ -922,6 +922,7 @@
     <string name="notice_protected_tool">保護工具，不能禁用。</string>
     <string name="label_mcp_tool">MCP · %1$s / %2$s</string>
     <string name="label_remote_mcp_tool">遠端 MCP 工具</string>
+    <string name="label_mcp_group_summary">%1$d / %2$d 啟用</string>
 
     <!-- Tool descriptions -->
     <string name="tool_list_directory">列出目錄</string>

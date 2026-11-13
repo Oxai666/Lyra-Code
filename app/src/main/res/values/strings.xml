@@ -878,6 +878,7 @@
     <string name="notice_protected_tool">Protected Tool</string>
     <string name="label_mcp_tool">MCP · %1$s / %2$s</string>
     <string name="label_remote_mcp_tool">Remote MCP Tool</string>
+    <string name="label_mcp_group_summary">%1$d / %2$d enabled</string>
     <string name="tool_list_directory">List Directory</string>
     <string name="tool_list_directory_desc">List Directory Desc</string>
     <string name="tool_read_file">Read File</string>
