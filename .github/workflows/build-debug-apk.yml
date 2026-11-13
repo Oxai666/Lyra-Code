@@ -8,10 +8,8 @@ name: Build Debug APK
 # issue 是公开可读的，抓一遍就知道错在哪。
 
 on:
-  push:
-    branches:
-      - main
-      - 'feat/**'
+  # 只在手动点的时候跑。push 自动触发已经关掉了——
+  # 这个项目暂时不做了，不想每次推都烧一次 Actions。
   workflow_dispatch:
 
 concurrency:
