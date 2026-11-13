@@ -40,6 +40,12 @@ jobs:
       - name: Init submodules
         run: git submodule update --init --recursive
 
+      # gradlew 在 git 里没有 +x 位，CI 直接跑会 Permission denied。
+      # 本地已经 chmod 过并提交了，但保险起见这里再设一次——
+      # 有些 Windows 用户的 fork 会把模式位弄丢。
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
